@@ -46,7 +46,7 @@ def import_csv_to_maria(file_path):
 
         # Use the import function from csv_mysql module
         DB_CONFIG = {
-            "host": "http://172.19.0.4:5000",
+            "host": "mariadb_container",
             "user": "root",
             "password": "rootpassword",
             "database": "csv_dump",
