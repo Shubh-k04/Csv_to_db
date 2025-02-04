@@ -1,0 +1,45 @@
+# Python virtual environment
+myenv/
+venv/
+env/
+.env
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Local development configuration
+*.env
+.env.local
+.env.*.local
+
+# Log files
+*.log
+
+# Database files
+*.sqlite3
+*.db
+*.sql
+mysql_dump.sql
+
+# Docker
+.docker/
+
+# File uploads
+uploads/ 
