@@ -7,7 +7,6 @@ import mysql.connector
 from pymongo import MongoClient
 from werkzeug.utils import secure_filename
 import pandas as pd
-import csv_mysql
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,49 +14,59 @@ load_dotenv()
 app = Flask(__name__)
 
 # MySQL (MariaDB) Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}?charset=utf8mb4"
+app.config['SQLALCHEMY_DATABASE_URI'] = (
+    f"mysql+mysqlconnector://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
+    f"@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}?charset=utf8mb4"
+)
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 # MongoDB Connection Setup
-mongo_client = MongoClient(f"mongodb://{os.getenv('MONGO_USER')}:{os.getenv('MONGO_PASSWORD')}@{os.getenv('MONGO_HOST')}:{os.getenv('MONGO_PORT')}/")
+mongo_client = MongoClient(
+    f"mongodb://{os.getenv('MONGO_USER')}:{os.getenv('MONGO_PASSWORD')}@"
+    f"{os.getenv('MONGO_HOST')}:{os.getenv('MONGO_PORT')}/"
+)
 mongo_db = mongo_client[os.getenv('MONGO_DB_NAME')]  # MongoDB Database
 mongo_collection = mongo_db['filtered_data']  # Target Collection in MongoDB
 
-# Add these configurations right after creating the Flask app
+# File upload configuration
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'csv'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Create uploads directory if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Add DB_CONFIG at the top of the file with other configurations
+# Database configuration for mysql.connector
+DB_CONFIG = {
+    "host": os.getenv('DB_HOST'),
+    "user": os.getenv('DB_USER'),
+    "password": os.getenv('DB_PASSWORD'),
+    "database": os.getenv('DB_NAME'),
+    "port": int(os.getenv('DB_PORT')),
+    "charset": 'utf8mb4',
+    "collation": 'utf8mb4_general_ci'
+}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
 def import_csv_to_maria(file_path):
     try:
-        # Check if filename is provided
-        filename = request.json.get('filename')
-        if not filename:
-            return jsonify({"error": "Filename not provided"}), 400
-            
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(filename))
-        if not os.path.exists(filepath):
-            return jsonify({"error": "File not found"}), 404
+        if not os.path.exists(file_path):
+            print(f"Error: File not found at {file_path}")
+            return {"error": "File not found"}
 
-        # Use the import function from csv_mysql module
-        DB_CONFIG = {
-            "host": "mariadb_container",
-            "user": "root",
-            "password": "rootpassword",
-            "database": "csv_dump",
-            "port": 3306,
-            "charset": "utf8mb4",
-            "use_unicode": True,
-            "collation": "utf8mb4_general_ci"
-        }
         print("Connecting to MariaDB...")
-        mydb = mysql.connector.connect(**DB_CONFIG)
-        cursor = mydb.cursor()
+        mydb = mysql.connector.connect(
+            host=os.getenv('DB_HOST'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASSWORD'),
+            database=os.getenv('DB_NAME'),
+            port=int(os.getenv('DB_PORT')),
+            charset='utf8mb4',
+            use_unicode=True,
+            collation='utf8mb4_general_ci'
+        )
+        cursor = mydb.cursor(buffered=True)
         
         # Set proper character set and collation
         cursor.execute("SET NAMES utf8mb4")
@@ -66,7 +75,7 @@ def import_csv_to_maria(file_path):
         print("Connected successfully!")
 
         print("Reading CSV file...")
-        df = pd.read_csv(filepath)
+        df = pd.read_csv(file_path)
         # Drop columns where all values are NaN
         df = df.dropna(axis=1, how='all')
         
@@ -83,10 +92,12 @@ def import_csv_to_maria(file_path):
         print("\nDropping existing table...")
         cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
         mydb.commit()
+
+        # Improved type mapping
         type_mapping = {
             'object': 'VARCHAR(255)',
             'int64': 'BIGINT',
-            'float64': 'DOUBLE',  # Changed from FLOAT to DOUBLE for better precision
+            'float64': 'DOUBLE',
             'bool': 'BOOLEAN',
             'datetime64': 'DATETIME',
             'timedelta64': 'TIME',
@@ -110,7 +121,7 @@ def import_csv_to_maria(file_path):
                 sql_type = type_mapping.get(col_type, 'VARCHAR(255)')
             
             create_table_query += f"`{col}` {sql_type} NULL, "
-        create_table_query = create_table_query.rstrip(', ') + ") CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+        create_table_query = create_table_query.rstrip(', ') + ") CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
 
         print("\nExecuting CREATE TABLE query:")
         print(create_table_query)
@@ -154,11 +165,17 @@ def import_csv_to_maria(file_path):
                 raise
 
         print(f"\nImport completed successfully! Total rows imported: {total_rows}")
-        os.remove(filepath)
         return {"message": f"CSV data imported successfully! Total rows: {total_rows}"}
+
     except mysql.connector.Error as err:
         error_msg = f"Database error: {str(err)}"
         print(error_msg)
+        return {"error": error_msg}
+    except Exception as e:
+        error_msg = f"Unexpected error: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
         return {"error": error_msg}
     finally:
         if 'cursor' in locals():
@@ -166,19 +183,6 @@ def import_csv_to_maria(file_path):
         if 'mydb' in locals() and mydb.is_connected():
             mydb.close()
             print("Database connection closed.")
-
-DB_CONFIG = {
-    "host": os.getenv('DB_HOST'),
-    "user": os.getenv('DB_USER'),
-    "password": os.getenv('DB_PASSWORD'),
-    "database": os.getenv('DB_NAME'),
-    "port": int(os.getenv('DB_PORT')),
-    "charset": 'utf8mb4',
-    "collation": 'utf8mb4_general_ci'  # Add explicit collation
-}
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -215,12 +219,10 @@ def upload_file():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Test route to check Flask server
 @app.route('/')
 def hello():
     return "Flask server is running!"
 
-# Create API for inserting data into MongoDB
 @app.route('/import_csv_to_mongo', methods=['POST'])
 def import_csv_to_mongo():
     try:
@@ -232,11 +234,10 @@ def import_csv_to_mongo():
         if not os.path.exists(filepath):
             return jsonify({"error": "File not found"}), 404
 
-        # Import the data using pandas and insert into MongoDB
-        df = pd.read_csv(filepath, chunksize=1000)  # Read in chunks of 1000 rows
-        
+        # Import the data using pandas and insert into MongoDB in chunks
+        df_iter = pd.read_csv(filepath, chunksize=1000)
         total_rows = 0
-        for chunk in df:
+        for chunk in df_iter:
             records = chunk.to_dict('records')
             mongo_collection.insert_many(records)
             total_rows += len(records)
@@ -251,7 +252,6 @@ def import_csv_to_mongo():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Create API for adding data into MariaDB from CSV
 @app.route('/import_csv_to_maria', methods=['POST'])
 def import_csv_to_maria_route():
     try:
@@ -280,7 +280,7 @@ def import_csv_to_maria_route():
             file.save(file_path)
 
         try:
-            # Import the file using the function from csv_mysql
+            # Import the file using the function above
             result = import_csv_to_maria(file_path)
             
             # Clean up the file after processing
@@ -300,7 +300,6 @@ def import_csv_to_maria_route():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Read data from MongoDB (example)
 @app.route('/get_mongo_data', methods=['GET'])
 def get_mongo_data():
     try:
@@ -324,7 +323,6 @@ def get_mongo_data():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# Read data from MariaDB (example)
 @app.route('/get_maria_data', methods=['GET'])
 def get_maria_data():
     mydb = None
@@ -338,16 +336,8 @@ def get_maria_data():
         offset = (page - 1) * per_page
 
         # Connect to MariaDB
-        mydb = mysql.connector.connect(
-            host=os.getenv('DB_HOST'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
-            database=os.getenv('DB_NAME'),
-            port=int(os.getenv('DB_PORT')),
-            charset='utf8mb4',
-            collation='utf8mb4_general_ci'
-        )
-        cursor = mydb.cursor(dictionary=True)
+        mydb = mysql.connector.connect(**DB_CONFIG)
+        cursor = mydb.cursor(dictionary=True, buffered=True)
 
         # Get total count of records
         cursor.execute("SELECT COUNT(*) as total FROM filtered_data")
@@ -397,7 +387,6 @@ def get_maria_data():
         if mydb is not None and mydb.is_connected():
             mydb.close()
 
-# Update data in MongoDB (example)
 @app.route('/update_mongo_data/<string:id>', methods=['PUT'])
 def update_mongo_data(id):
     try:
@@ -407,7 +396,6 @@ def update_mongo_data(id):
     except Exception as e:
         return jsonify({"message": str(e)}), 500
 
-# Delete data from MongoDB (example)
 @app.route('/delete_mongo_data/<string:id>', methods=['DELETE'])
 def delete_mongo_data(id):
     try:
@@ -426,117 +414,137 @@ def delete_mongo_data(id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/test', methods=['GET'])
-def test():
-    return "Server is running!"
-
-# Update data in MariaDB
 @app.route('/update_maria_data', methods=['PUT'])
 def update_maria_data():
     mydb = None
-    cursor = None
     try:
-        # Get JSON data
-        update_data = request.get_json()
-        if not update_data:
-            return jsonify({"error": "No update data provided"}), 400
+        # Expecting a JSON body with keys: where_column, where_value, update_column, update_value
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON body is missing"}), 400
 
-        # Extract unique column dynamically from the request
-        unique_column = update_data.get('unique_column')  # Get dynamic unique column
-        if not unique_column:
-            return jsonify({"error": "No unique column provided"}), 400
+        where_column = data.get('where_column')
+        where_value = data.get('where_value')
+        update_column = data.get('update_column')
+        update_value = data.get('update_value')
 
-        # Ensure unique column is in the data
-        if unique_column not in update_data:
-            return jsonify({"error": f"Missing unique identifier: {unique_column}"}), 400
-
-        # Extract the unique value and remove it from the update data
-        unique_value = update_data.pop(unique_column)  # Extract unique value
-        if not update_data:
-            return jsonify({"error": "No fields to update provided"}), 400
+        if not where_column or where_value is None:
+            return jsonify({"error": "Missing where_column or where_value in request body"}), 400
+        if not update_column or update_value is None:
+            return jsonify({"error": "Missing update_column or update_value in request body"}), 400
 
         # Connect to MariaDB
-        mydb = mysql.connector.connect(
-            host=os.getenv('DB_HOST'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
-            database=os.getenv('DB_NAME'),
-            port=int(os.getenv('DB_PORT')),
-            charset='utf8mb4',
-            collation='utf8mb4_general_ci'
-        )
-        cursor = mydb.cursor()
+        mydb = mysql.connector.connect(**DB_CONFIG)
 
-        # Build UPDATE query dynamically (skip unique_column in the SET part)
-        set_clause = ", ".join([f"{key} = %s" for key in update_data.keys()])
-        values = list(update_data.values()) + [unique_value]  # Add unique value for WHERE clause
+        # Check if where_column exists
+        with mydb.cursor(dictionary=True, buffered=True) as schema_cursor:
+            schema_cursor.execute(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'filtered_data' AND COLUMN_NAME = %s",
+                (os.getenv('DB_NAME'), where_column)
+            )
+            if not schema_cursor.fetchone():
+                return jsonify({"error": f"Unknown column in where clause: {where_column}"}), 400
 
-        # Make sure unique_column is in the WHERE clause and not in the SET clause
-        print(set_clause)
-        update_query = f"UPDATE filtered_data SET {set_clause} WHERE {unique_column} = %s"
-        cursor.execute(update_query, values)
+        # Check if update_column exists and get its data type
+        with mydb.cursor(dictionary=True, buffered=True) as schema_cursor:
+            schema_cursor.execute(
+                "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'filtered_data' AND COLUMN_NAME = %s",
+                (os.getenv('DB_NAME'), update_column)
+            )
+            column_info = schema_cursor.fetchone()
+            if not column_info:
+                return jsonify({"error": f"Unknown column: {update_column}"}), 400
 
-        if cursor.rowcount == 0:
-            return jsonify({"error": "Record not found or no changes made"}), 404
+            col_type = column_info['DATA_TYPE'].lower()
+            try:
+                if col_type in ('decimal', 'int', 'bigint', 'float', 'double'):
+                    if isinstance(update_value, str) and update_value.lower() == 'null':
+                        processed_value = None
+                    else:
+                        processed_value = float(update_value) if col_type in ('decimal', 'float', 'double') else int(update_value)
+                else:
+                    processed_value = update_value
+            except ValueError:
+                return jsonify({"error": f"Invalid value for column {update_column}: {update_value}"}), 400
 
-        mydb.commit()
+        # First validate that a record with the given where_value exists
+        with mydb.cursor(dictionary=True, buffered=True) as check_cursor:
+            check_query = f"SELECT * FROM filtered_data WHERE `{where_column}` = %s"
+            check_cursor.execute(check_query, (where_value,))
+            existing_record = check_cursor.fetchone()
+            if not existing_record:
+                return jsonify({"error": "Record not found"}), 404
+
+        # Perform update
+        with mydb.cursor(buffered=True) as update_cursor:
+            update_query = f"UPDATE filtered_data SET `{update_column}` = %s WHERE `{where_column}` = %s"
+            update_cursor.execute(update_query, (processed_value, where_value))
+            mydb.commit()
+
+        # Fetch updated record
+        with mydb.cursor(dictionary=True, buffered=True) as fetch_cursor:
+            fetch_cursor.execute(check_query, (where_value,))
+            updated_record = fetch_cursor.fetchone()
 
         return jsonify({
             "message": "Record updated successfully",
-            "rows_affected": cursor.rowcount
+            "updated_record": updated_record
         }), 200
 
     except mysql.connector.Error as err:
+        if mydb:
+            mydb.rollback()
         return jsonify({"error": f"Database error: {str(err)}"}), 500
     except Exception as e:
+        if mydb:
+            mydb.rollback()
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
-        if cursor:
-            cursor.close()
-        if mydb and mydb.is_connected():
+        if mydb:
             mydb.close()
 
-# Delete data from MariaDB
 @app.route('/delete_maria_data', methods=['DELETE'])
 def delete_maria_data():
     mydb = None
     cursor = None
     try:
-        # Get JSON data with the unique column and value
-        delete_data = request.get_json()
-        if not delete_data:
-            return jsonify({"error": "No delete criteria provided"}), 400
+        # Expecting a JSON body with keys: unique_column, unique_value
+        data = request.get_json()
+        if not data or not isinstance(data, dict):
+            return jsonify({"error": "Invalid JSON delete data provided"}), 400
 
-        # Extract unique column dynamically from the request
-        unique_column = delete_data.get('unique_column')  # Get dynamic unique column
+        unique_column = data.get('unique_column')
+        unique_value = data.get('unique_value')
+
         if not unique_column:
-            return jsonify({"error": "No unique column provided"}), 400
-
-        # Ensure unique column is in the delete data
-        if unique_column not in delete_data:
-            return jsonify({"error": f"Missing unique identifier: {unique_column}"}), 400
-
-        unique_value = delete_data[unique_column]  # Get unique value from delete data
+            return jsonify({"error": "No unique column specified"}), 400
+        if unique_value is None:
+            return jsonify({"error": "No unique value provided"}), 400
 
         # Connect to MariaDB
-        mydb = mysql.connector.connect(
-            host=os.getenv('DB_HOST'),
-            user=os.getenv('DB_USER'),
-            password=os.getenv('DB_PASSWORD'),
-            database=os.getenv('DB_NAME'),
-            port=int(os.getenv('DB_PORT')),
-            charset='utf8mb4',
-            collation='utf8mb4_general_ci'
+        mydb = mysql.connector.connect(**DB_CONFIG)
+        cursor = mydb.cursor(dictionary=True, buffered=True)
+
+        # Check if unique_column exists
+        cursor.execute(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'filtered_data' AND COLUMN_NAME = %s",
+            (os.getenv('DB_NAME'), unique_column)
         )
-        cursor = mydb.cursor()
+        if not cursor.fetchone():
+            return jsonify({"error": f"Unknown column: {unique_column}"}), 400
 
-        # Delete query
-        delete_query = f"DELETE FROM filtered_data WHERE {unique_column} = %s"
-        cursor.execute(delete_query, (unique_value,))
-
-        if cursor.rowcount == 0:
+        # First check if record exists
+        check_query = f"SELECT * FROM filtered_data WHERE `{unique_column}` = %s"
+        cursor.execute(check_query, (unique_value,))
+        if not cursor.fetchone():
             return jsonify({"error": "Record not found"}), 404
 
+        # Delete query
+        delete_query = f"DELETE FROM filtered_data WHERE `{unique_column}` = %s"
+        cursor.execute(delete_query, (unique_value,))
         mydb.commit()
 
         return jsonify({
@@ -545,8 +553,12 @@ def delete_maria_data():
         }), 200
 
     except mysql.connector.Error as err:
+        if mydb:
+            mydb.rollback()
         return jsonify({"error": f"Database error: {str(err)}"}), 500
     except Exception as e:
+        if mydb:
+            mydb.rollback()
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
     finally:
         if cursor:
@@ -554,6 +566,9 @@ def delete_maria_data():
         if mydb and mydb.is_connected():
             mydb.close()
 
+@app.route('/test', methods=['GET'])
+def test():
+    return "Server is running!"
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0')
-
